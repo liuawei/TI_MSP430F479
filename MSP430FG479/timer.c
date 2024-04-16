@@ -1,0 +1,135 @@
+#include "timer.h"
+#include "uart.h"
+#include "adc.h"
+#include "dac.h"
+#include "delay.h"
+#include <string.h>
+//////////////////////////////////////////////////////////////////////////////////	 
+//timer驱动代码	   								  
+////////////////////////////////////////////////////////////////////////////////// 	   
+u8 MotorState=1;	
+s16 MotorIntervalTime ;
+s16 MotorIntervalTimeBuf ;
+
+s16 SampleIntervalTime = SAMPLEINTERVAL;
+
+u32 timecnt=0;
+u16 actualvalue[2]={0,0};
+
+u16 Sinewave[2][11]=
+{
+  {1792,2845,3496,3496,2845,1792,738,87,87,738,1792},
+  {2167,2359,2478,2478,2359,2167,1974,1855,1855,1974,2167},//c46
+};
+float Wavefactor=0.5;
+u16 FinalWave=0;
+u8 Sequencenum=0;
+u8 taskswitch=MOTORRUN;
+//    FinalWave=(u16)(Sinewave[Sequencenum]*Wavefactor);
+#pragma vector = TIMER0_A0_VECTOR
+__interrupt void Timer_A(void) 
+{
+  if(TA0CTL&TAIFG)
+  {
+    Sequencenum++;
+    TA0CTL&=~TAIFG; //清楚中断标志位    
+//    SD16CCTL0 |= SD16IE;
+  }
+}
+
+void Timer_Init()
+{      
+//  TA0CCR0 = 8000;                        // 定义中断计数周期1s,时钟频率为8MHZ,8000 / 8M = 1ms
+  TA0CCR0 = 104;                           // 定义中断计数周期1s,时钟频率为8MHZ,104/ 8M = 13us
+ // TA0CCTL0 = CCIE;                        // TA0CCR0捕获/比较中断寄存器中断使能
+  TA0CTL = TASSEL_2 + MC_1 + TACLR;       // TASSEL_2, SMCLK时钟源  MC_1,增计数模式
+//   _BIS_SR(LPM3_bits + GIE);               // 进入LPM3低功耗模式,开启总中断
+}
+
+void MotorTask(void)
+{
+  if (MotorIntervalTime >= 0)
+  {
+      MotorIntervalTime -= 1;
+      if (MotorIntervalTime <= 0)
+      {
+          MotorIntervalTime = -1;
+      }
+  }
+  if(MotorIntervalTime<0)
+  {
+    MotorState = 1;
+    PeriodCnt =0;
+    MotorIntervalTime = MotorIntervalTimeBuf;
+  }
+  
+}
+void SampleTask(void)
+{
+  if (SampleIntervalTime >= 0)
+  {
+      SampleIntervalTime -= ONESECOND;
+      if (SampleIntervalTime <= 0)
+      {
+          SampleIntervalTime = -1;
+      }
+  }
+  if(SampleIntervalTime<0)
+  {
+    IE2 &= ~BTIE; 
+	IFG2 &=~BTIFG;//清中断标志
+	MotorSet(0); 
+	DAC_SetChannle(ChannelNum);
+    Setchannel(ChannelNum);
+	timeout_1ms=0;
+	taskswitch=SAMPLERUN;
+    SampleIntervalTime = SAMPLEINTERVAL;
+  }
+}
+
+u16 storecnt=0;
+u8  revnum=0;
+void takeSample(void)
+{
+  if(TA0CTL&TAIFG)
+  {
+  results[revnum][Sequencenum] = SD16MEM0;
+  DAC_Set(Sinewave[ChannelNum][Sequencenum]);
+  TA0CTL&=~TAIFG;
+  Sequencenum++;
+  if(Sequencenum >= 11)
+    {
+      Sequencenum=0;
+      revnum++;
+      if(revnum==3)
+      revnum=0;
+      storecnt++;
+      if(storecnt>=(Num_of_Results/11)*1000)
+      {
+        storecnt=0;
+        memcpy(resultsbuf[ChannelNum],&results,66);
+        actualvalue[ChannelNum]=Max_value(&results[ChannelNum][0]);
+        if(ChannelNum==CHANNELC38)
+        {
+          ChannelNum=CHANNELC46; 
+		  DAC_SetChannle(ChannelNum);
+          Setchannel(ChannelNum);
+        }
+         
+        else if(ChannelNum==CHANNELC46)
+        {
+          DAC_SetChannle(TURNOFF);
+          ChannelNum=CHANNELC38;
+          taskswitch=MOTORRUN;
+		  IE2 |= BTIE; 
+        }       
+        
+      }
+
+      //TA0CCTL0 &= ~CCIE;
+    }
+  }
+}
+
+
+
